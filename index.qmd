@@ -1,0 +1,402 @@
+---
+title: "Mapa Interactivo de sismos a nivel global (1995–2023)"
+author: "Bernardo Aguilar Nuñez"
+output: html_document
+date: "2026-06-19"
+format:
+  dashboard:
+    scrolling: true
+    nav-buttons:
+      - icon: github
+        href: https://github.com/
+lang: es
+toc: true
+theme: darkly
+##code-fold: true
+##code-summary: "Mostrar código"
+---
+
+## Carga de datos y paquetes.
+
+```{r}
+#| label: cargar_los_paquetes
+#| warning: false
+#| message: false
+##| echo: true
+##| code-fold: true
+
+library(tidyverse)
+library(sf)
+library(tmap)
+library(plotly)
+library(DT)
+library(leaflet)
+library(leaflet.extras)
+
+tmap_mode("view")
+```
+
+```{r}
+#| label: carga-datos
+#| message: false
+#| warning: false
+##| echo: true
+##| code-fold: true
+
+sismos <- read_csv("earthquake_1995-2023.csv", show_col_types = FALSE)
+ 
+continentes <- st_read("continent_boundaries_7.gpkg", quiet = TRUE)
+
+```
+
+## Preparacion de datos
+
+```{r}
+#| label: preparación-datos
+#| message: false
+#| warning: false
+##| echo: true
+##| code-fold: true
+
+## Conversion 
+sismos <- sismos |> mutate(
+    fecha = parse_date_time(date_time, orders = "dmy HM"),
+    anio = year(fecha),
+    latitude = as.numeric(latitude),
+    longitude = as.numeric(longitude),
+    magnitude = as.numeric(magnitude),
+    depth = as.numeric(depth),
+    tsunami = as.integer(tsunami)
+  ) |> filter(!is.na(latitude), !is.na(longitude), !is.na(magnitude))
+
+sismos_por_continente <-
+  sismos |>
+  filter(!is.na(continent), continent != "") |>
+  group_by(continent) |>
+  summarize(
+    total_sismos = n(),
+    mag_promedio = round(mean(magnitude, na.rm = TRUE), 2),
+    mag_maxima = round(max(magnitude, na.rm = TRUE), 2),
+    prof_promedio = round(mean(depth, na.rm = TRUE), 1),
+    con_tsunami = sum(tsunami == 1, na.rm = TRUE),
+    .groups = "drop"
+  ) |> arrange(desc(total_sismos))
+
+continentes_union_sismos <-
+  left_join(
+    x  = continentes,
+    y  = sismos_por_continente,
+    by = join_by(CONTINENT == continent)
+  ) |> replace_na(list(total_sismos = 0, mag_promedio = 0, con_tsunami = 0))
+
+total_sismos <- nrow(sismos)
+mag_maxima <- max(sismos$magnitude, na.rm = TRUE)
+total_tsunamis <- sum(sismos$tsunami == 1, na.rm = TRUE)
+
+pal_continentes <- colorNumeric(
+  palette = "YlOrRd",
+  domain  = continentes_union_sismos$total_sismos
+)
+
+pal_mag <- colorNumeric(palette = "YlOrRd", domain = sismos$magnitude)
+
+popups_sismos <- paste0(
+  "<b>Lugar:</b> ", sismos$location, "<br/>",
+  "<b>Magnitud:</b> ", sismos$magnitude, "<br/>",
+  "<b>Profundidad:</b> ", sismos$depth, " km<br/>",
+  "<b>Alerta:</b> ", sismos$alert, "<br/>",
+  "<b>Tsunami:</b> ", ifelse(sismos$tsunami == 1, "Sí", "No"), "<br/>",
+  "<b>País:</b> ", sismos$country
+)
+```
+
+## Row {height="7%"}
+
+```{r}
+#| content: valuebox
+#| title: "Sismos registrados en total"
+#| message: false
+#| warning: false
+##| echo: true
+##| code-fold: true
+
+
+list(
+  icon = "activity",
+  color = "primary",
+  value = format(total_sismos, big.mark = ",")
+)
+```
+
+```{r}
+#| content: valuebox
+#| title: "Máxima Magnitud registrada"
+#| message: false
+#| warning: false
+##| echo: true
+#3| code-fold: true
+
+
+list(
+  icon = "exclamation-triangle",
+  color = "danger",
+  value = format(mag_maxima, nsmall = 1)
+)
+```
+
+```{r}
+#| content: valuebox
+#| title: "Sismos con alerata por tsunami"
+#| message: false
+#| warning: false
+##echo: true
+##| code-fold: true
+
+
+list(
+  icon = "water",
+  color = "warning",
+  value = total_tsunamis
+)
+```
+
+## Row {height="20%"}
+
+### Column {.tabset width="14%"}
+
+```{r}
+#| label: mapa-sismos
+#| title: "Mapa interactivo que muestra los diferentes sismos a nivel gloval"
+#| message: false
+#| warning: false
+##| echo: true
+##| code-fold: true
+
+
+leaflet() |>
+  setView(lng = 0, lat = 20, zoom = 2) |>
+  addProviderTiles(providers$OpenStreetMap, group = "OpenStreetMap") |>
+  addProviderTiles(providers$CartoDB.Positron, group = "CartoDB Positron") |>
+  addProviderTiles(providers$Esri.WorldImagery, group = "Imágenes Esri") |>
+  addPolygons(
+    data = continentes,
+    weight = 1,
+    color = "black",
+    fillOpacity = 0,
+    label = ~CONTINENT,
+    group = "Continentes"
+  ) |>
+  
+  
+  addCircleMarkers(
+    data = sismos,
+    lat = ~latitude,
+    lng = ~longitude,
+    radius = ~(magnitude - 5) * 4,
+    color = ~pal_mag(magnitude),
+    fillOpacity = 0.7,
+    stroke = FALSE,
+    popup = popups_sismos,
+    label = ~paste0("M ", magnitude, " — ", location),
+    group = "Sismos"
+  ) |>
+  
+  
+  addLegend(position = "bottomright",
+    pal  = pal_mag,
+    values  = sismos$magnitude,
+    title  = "Magnitud",
+    opacity = 0.8
+  ) |>
+  
+  
+  addLayersControl(baseGroups = c("OpenStreetMap", "CartoDB Positron", "Imágenes Esri"),
+    overlayGroups = c("Continentes", "Sismos"),
+    options = layersControlOptions(collapsed = FALSE)
+  ) |>
+  addScaleBar(position = "bottomleft")
+```
+
+
+```{r}
+#| label: mapa-calor
+#| title: "Mapa de calor segun la desidad de sismos"
+#| message: false
+#| warning: false
+##| echo: true
+##| code-fold: true
+
+leaflet() |>
+  setView(lng = 0, lat = 20, zoom = 2) |>
+  addProviderTiles(providers$OpenStreetMap, group = "OpenStreetMap") |>
+  addProviderTiles(providers$CartoDB.Positron, group = "CartoDB Positron") |>
+  addProviderTiles(providers$Esri.WorldImagery, group = "Imágenes Esri") |>
+  addPolygons(
+    data = continentes,
+    weight = 1,
+    color = "black",
+    fillOpacity = 0,
+    label = ~CONTINENT,
+    group = "Continentes"
+  ) |>
+  addHeatmap(
+    data = sismos,
+    lat = ~latitude,
+    lng = ~longitude,
+    intensity = ~magnitude,
+    radius = 15,
+    blur = 20,
+    minOpacity = 0.3,
+    group = "Mapa de calor"
+  ) |>
+  
+  addLayersControl(
+    baseGroups = c("OpenStreetMap", "CartoDB Positron", "Imágenes Esri"),
+    overlayGroups = c("Continentes", "Mapa de calor"),
+    options = layersControlOptions(collapsed = FALSE)
+  ) |> addScaleBar(position = "bottomleft")
+```
+
+
+```{r}
+#| label: mapa-coropletas
+#| title: "mapa de coropletas de sismos por continente"
+#| message: false
+#| warning: false
+##| echo: true
+##| code-fold: true
+
+
+leaflet() |>
+  setView(lng = 0, lat = 20, zoom = 2) |>
+  addProviderTiles(providers$OpenStreetMap, group = "OpenStreetMap") |>
+  addProviderTiles(providers$CartoDB.Positron, group = "CartoDB Positron") |>
+  addProviderTiles(providers$Esri.WorldImagery, group = "Imágenes Esri") |>
+  addPolygons(
+    data = continentes_union_sismos,
+    weight = 1,
+    color = "black",
+    fillColor = ~pal_continentes(total_sismos),
+    fillOpacity = 0.7,
+    label = ~CONTINENT,
+    popup = ~paste0(
+      "<b>Continente:</b> ", CONTINENT, "<br/>",
+      "<b>Total sismos:</b> ", total_sismos, "<br/>",
+      "<b>Mag. promedio:</b> ", mag_promedio, "<br/>",
+      "<b>Con tsunami:</b> ", con_tsunami
+    ), group = "Sismos por continente") |>
+  
+  addLegend(
+    position = "bottomright",
+    pal = pal_continentes,
+    values = continentes_union_sismos$total_sismos,
+    title = "Total de sismos por continente",
+    opacity = 0.8) |>
+  
+  addLayersControl(
+    baseGroups = c("OpenStreetMap", "CartoDB Positron", "Imágenes Esri"),
+    overlayGroups = c("Sismos por continente"),
+    options = layersControlOptions(collapsed = FALSE)
+  ) |>
+  addScaleBar(position = "bottomleft")
+```
+
+## Row {height="10%"}
+
+### Column {width="5%"}
+
+```{r}
+#| label: grafico-continente
+#| title: "Grafico de barras horizontales sobre la cantidad de sismos por continente"
+#| message: false
+#| warning: false
+#| fig-height: 3
+#| fig-width: 5
+##| echo: true
+##| code-fold: true
+
+grafico_continente <-
+  sismos_por_continente |>
+  ggplot(aes(
+    
+    x    = total_sismos,
+    y    = reorder(continent, total_sismos),
+    fill = continent,
+    text = paste0(
+      "Continente: ", continent, "\n",
+      "Total sismos: ", total_sismos, "\n",
+      "Mag. promedio:", mag_promedio, "\n",
+      "Con tsunami: ", con_tsunami
+    )
+  )) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_brewer(palette = "Set2") +
+  ggtitle("total de sismos por continente (1995–2023)") +
+  xlab("Número de sismos registrados") +
+  ylab("Continente") +
+  theme_minimal()
+
+ggplotly(grafico_continente, tooltip = "text") |>
+  config(locale = "es")
+```
+
+## Row {height="22%"}
+
+### Column {width="15%"}
+
+```{r}
+#| label: tabla-registros
+#| title: "tabla interactiva con los registros de sismos"
+#| message: false
+#| warning: false
+##| echo: true
+##| code-fold: true
+
+sismos |>
+  dplyr::select(
+    title,
+    magnitude,
+    depth,
+    alert,
+    tsunami,
+    country,
+    continent,
+    date_time ) |>
+  
+  datatable(
+    colnames = c(
+      "Título", "Magnitud", "Profundidad (km)",
+      "Alerta", "Tsunami", "País", "Continente", "Fecha y hora"),
+    
+    rownames = FALSE,
+    filter   = "top",
+    options  = list(
+      pageLength = 7,
+      language = list(url = "//cdn.datatables.net/plug-ins/1.10.11/i18n/Spanish.json"),
+      scrollX = TRUE)
+  )
+```
+
+```{r}
+#| label: grafico-magnitud
+#| title: "Promedio de magnitud por continente"
+#| message: false
+#| warning: false
+##| echo: true
+##| code-fold: true
+
+g <-
+  sismos_por_continente |>
+  ggplot(aes(
+    x = mag_promedio,
+    y = reorder(continent, mag_promedio),
+    fill = continent
+  )) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_brewer(palette = "Set2") +
+  xlab("Magnitud en promedio (Richter)") +
+  ylab("Continente") +
+  theme_minimal()
+
+ggplotly(g)
+```
